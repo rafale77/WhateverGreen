@@ -1659,6 +1659,11 @@ private:
 		uint32_t queueSize {kDefaultQueueSize};
 		
 		/**
+		 * Precalculated values for sin((i/steps)*π/2)
+		 */
+		double *sines {nullptr};
+		
+		/**
 		 *  The range of the brightness level (represented as register values)
 		 */
 		ppair<uint32_t, uint32_t> brightnessRange {0, UINT32_MAX};

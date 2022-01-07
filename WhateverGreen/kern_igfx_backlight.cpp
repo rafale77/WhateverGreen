@@ -256,8 +256,8 @@ bool BrightnessRequestEventSource::checkForWork() {
 	if (distance > smoother->threshold) {
 		if (cbrightness < tbrightness) {
 			// Increase the brightness
-			for (uint32_t i = 0; i < smoother->steps; i++) {
-				uint32_t value = cbrightness + sin(i * M_PI_2 / smoother->steps) * distance;
+			for (uint32_t i = 1; i < smoother->steps; i++) {
+				uint32_t value = cbrightness + smoother->sines[i] * distance;
 				IGFX::callbackIGFX->writeRegister32(request.controller, request.address, request.getTargetRegisterValue(value));
 				IOSleep(smoother->interval);
 				if (smoother->request.id != request.id) {
@@ -266,8 +266,8 @@ bool BrightnessRequestEventSource::checkForWork() {
 			}
 		} else if (cbrightness > tbrightness) {
 			// Decrease the brightness
-			for (uint32_t i = 0; i < smoother->steps; i++) {
-				uint32_t value = cbrightness - sin(i * M_PI_2 / smoother->steps) * distance;
+			for (uint32_t i = 1; i < smoother->steps; i++) {
+				uint32_t value = cbrightness - smoother->sines[i] * distance;
 				IGFX::callbackIGFX->writeRegister32(request.controller, request.address, request.getTargetRegisterValue(value));
 				IOSleep(smoother->interval);
 				if (smoother->request.id != request.id) {
@@ -322,6 +322,10 @@ void IGFX::BacklightSmoother::init() {
 
 void IGFX::BacklightSmoother::deinit() {
 	// `BacklightSmoother::processKernel()` guarantees that all pointers are nullptr on failure
+	if (sines != nullptr) {
+		kern_os_free(sines);
+	}
+	
 	if (workloop != nullptr) {
 		if (eventSource != nullptr) {
 			workloop->removeEventSource(eventSource);
@@ -368,6 +372,17 @@ void IGFX::BacklightSmoother::processKernel(KernelPatcher &patcher, DeviceInfo *
 		SYSLOG("igfx", "BLS: Warning: User requested brightness range is invalid. Will use the default range.");
 		brightnessRange.first = 0;
 		brightnessRange.second = UINT32_MAX;
+	}
+	
+	sines = static_cast<double*>(kern_os_malloc(steps * sizeof(double)));
+	if (sines == nullptr) {
+		SYSLOG("igfx", "BLS: Failed to allocate sines array.");
+		deinit();
+		enabled = false;
+		return;
+	}
+	for (int i = 0; i < steps; i++) {
+		sines[i] = sin(i * M_PI_2 / steps);
 	}
 	
 	// Wrap this submodule as an OSObject
