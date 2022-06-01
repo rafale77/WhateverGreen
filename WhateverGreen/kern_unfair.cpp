@@ -91,11 +91,11 @@ void UNFAIR::processKernel(KernelPatcher &patcher, DeviceInfo *info) {
 	if ((unfairGva & UnfairCustomAppleGvaBoardId) != 0) {
 		auto entry = IORegistryEntry::fromPath("/", gIODTPlane);
 		if (entry) {
-			DBGLOG("unfair", "setting hwgva-id to iMacPro1,1");
-			entry->setProperty("hwgva-id", const_cast<char *>("Mac-7BA5B2D9E42DDD94"), static_cast<uint32_t>(sizeof("Mac-7BA5B2D9E42DDD94")));
+			DBGLOG("unfair", "setting hwgva-id to iMac17,1");
+			entry->setProperty("hwgva-id", const_cast<char *>("Mac-B809C3757DA9BB8D"), static_cast<uint32_t>(sizeof("Mac-B809C3757DA9BB8D")));
 			entry->release();
 		} else {
-			SYSLOG("shiki", "failed to obtain iodt tree");
+			SYSLOG("unfair", "failed to obtain iodt tree");
 			unfairGva &= ~UnfairCustomAppleGvaBoardId;
 		}
 	}
