@@ -295,6 +295,11 @@ private:
 	bool moderniseAccelerator {false};
 
 	/**
+	 *  Set to true to force Kaby Lake graphics kext to be used on Skylake
+	 */
+	bool forceSKLAsKBL {false};
+
+	/**
 	 *  GuC firmware loading scheme
 	 */
 	enum FirmwareLoad {
@@ -1671,7 +1676,7 @@ private:
 		/**
 		 *  A list of pending brightness adjustment requests
 		 */
-		BrightnessRequestQueue *queue {nullptr};
+		BrightnessRequest request;
 
 		/**
 		 *  A workloop that provides a kernel thread to adjust the brightness
