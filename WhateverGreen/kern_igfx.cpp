@@ -996,22 +996,19 @@ OSObject *IGFX::wrapCopyExistingServices(OSDictionary *matching, IOOptionBits in
 	return FunctionCast(wrapCopyExistingServices, callbackIGFX->orgCopyExistingServices)(matching, inState, options);
 }
 
-bool IGFX::wrapAcceleratorStart(IOService *that, IOService *provider) {
-	if (callbackIGFX->disableAccel)
-		return false;
-	
-	OSDictionary* developmentDictCpy {};
-
-	if (callbackIGFX->fwLoadMode != FW_APPLE || callbackIGFX->modForceWakeWorkaround.enabled) {
-		auto developmentDict = OSDynamicCast(OSDictionary, that->getProperty("Development"));
-		if (developmentDict) {
-			auto c = developmentDict->copyCollection();
-			if (c)
-				developmentDictCpy = OSDynamicCast(OSDictionary, c);
-			if (c && !developmentDictCpy)
-				c->release();
-		}
+bool IGFX::applyDevelopmentPatches(IOService *that) {
+	// skip if not requested
+	if (callbackIGFX->fwLoadMode == FW_APPLE && !callbackIGFX->modForceWakeWorkaround.enabled) {
+		return true;
 	}
+
+	auto devDict = OSDynamicCast(OSDictionary, that->getProperty("Development"));
+	if (!devDict)
+		return false;
+
+	auto newDevDict = OSDictionary::withDictionary(devDict);
+	if (!newDevDict)
+		return false;
 
 	// By default Apple drivers load Apple-specific firmware, which is incompatible.
 	// On KBL they do it unconditionally, which causes infinite loop.
@@ -1020,7 +1017,7 @@ bool IGFX::wrapAcceleratorStart(IOService *that, IOService *provider) {
 	// On 10.15 an option is differently named but still there.
 	// There are some laptops that support Apple firmware, for them we want it to be loaded explicitly.
 	// REF: https://github.com/acidanthera/bugtracker/issues/748
-	if (callbackIGFX->fwLoadMode != FW_APPLE && developmentDictCpy) {
+	if (callbackIGFX->fwLoadMode != FW_APPLE) {
 		// 1 - Automatic scheduler (Apple -> fallback to disabled)
 		// 2 - Force disable via plist (removed as of 10.15)
 		// 3 - Apple Scheduler
@@ -1035,26 +1032,88 @@ bool IGFX::wrapAcceleratorStart(IOService *that, IOService *provider) {
 			scheduler = 2;
 		auto num = OSNumber::withNumber(scheduler, 32);
 		if (num) {
-			developmentDictCpy->setObject("GraphicsSchedulerSelect", num);
+			newDevDict->setObject("GraphicsSchedulerSelect", num);
 			num->release();
 		}
 	}
-	
+
 	// 0: Framebuffer's SafeForceWake
 	// 1: IntelAccelerator::SafeForceWakeMultithreaded (or ForceWakeWorkaround when enabled)
 	// The default is 1. Forcing 0 will result in hangs (due to misbalanced number of calls?)
-	if (callbackIGFX->modForceWakeWorkaround.enabled && developmentDictCpy) {
+	if (callbackIGFX->modForceWakeWorkaround.enabled) {
 		auto num = OSNumber::withNumber(1ull, 32);
 		if (num) {
-			developmentDictCpy->setObject("MultiForceWakeSelect", num);
+			newDevDict->setObject("MultiForceWakeSelect", num);
 			num->release();
 		}
 	}
-	
-	if (developmentDictCpy) {
-		that->setProperty("Development", developmentDictCpy);
-		developmentDictCpy->release();
+
+	that->setProperty("Development", newDevDict);
+	newDevDict->release();
+
+	return true;
+}
+
+bool IGFX::applySklAsKblPatches(IOService *that) {
+	DBGLOG("igfx", "disabling VP9 hw decode support on Skylake with KBL kexts");
+	that->removeProperty("IOGVAXDecode");
+
+	// SKL does not support 10-bit hardware encoding/decoding, and this causes freezing when attempting to do so.
+	// The removal of profile 2 under VTSupportedProfileArray allows fallback to software encoding/decoding.
+	// Thanks dhinakg and aben for finding this.
+	const char *hevcCapProps[] = { "IOGVAHEVCDecodeCapabilities", "IOGVAHEVCEncodeCapabilities" };
+	bool found = false;
+	for (auto prop : hevcCapProps) {
+		auto hevcCap = OSDynamicCast(OSDictionary, that->getProperty(prop));
+		if (!hevcCap)
+			continue;
+
+		auto newHevcCap = OSDictionary::withDictionary(hevcCap);
+		if (!newHevcCap)
+			continue;
+
+		auto vtSuppProf = OSDynamicCast(OSArray, newHevcCap->getObject("VTSupportedProfileArray"));
+		if (!vtSuppProf) {
+			newHevcCap->release();
+			continue;
+		}
+
+		auto newVtSuppProf = OSArray::withArray(vtSuppProf);
+		if (!newVtSuppProf) {
+			newHevcCap->release();
+			continue;
+		}
+
+		unsigned int count = newVtSuppProf->getCount();
+		for (unsigned int i = 0; i < count; i++) {
+			auto num = OSDynamicCast(OSNumber, newVtSuppProf->getObject(i));
+			if (!num)
+				continue;
+
+			if (num->unsigned8BitValue() == 2) {
+				DBGLOG("igfx", "removing profile 2 from VTSupportedProfileArray/%s index %u on Skylake with KBL kexts", prop, i);
+				newVtSuppProf->removeObject(i);
+				found = true;
+				break;
+			}
+		}
+
+		newHevcCap->setObject("VTSupportedProfileArray", newVtSuppProf);
+		newVtSuppProf->release();
+
+		that->setProperty(prop, newHevcCap);
+		newHevcCap->release();
 	}
+
+	return found;
+}
+
+bool IGFX::wrapAcceleratorStart(IOService *that, IOService *provider) {
+	if (callbackIGFX->disableAccel)
+		return false;
+	
+	if (!applyDevelopmentPatches(that))
+		SYSLOG("igfx", "failed to apply dict Development patches");
 
 	OSObject *metalPluginName = that->getProperty("MetalPluginName");
 	if (metalPluginName) {
@@ -1071,9 +1130,8 @@ bool IGFX::wrapAcceleratorStart(IOService *that, IOService *provider) {
 	if (callbackIGFX->moderniseAccelerator)
 		that->setName("IntelAccelerator");
 	
-	if (callbackIGFX->forceSKLAsKBL) {
-		DBGLOG("igfx", "disabling VP9 hw decode support on Skylake when using KBL kexts");
-		that->removeProperty("IOGVAXDecode");
+	if (callbackIGFX->forceSKLAsKBL && !applySklAsKblPatches(that)) {
+		SYSLOG("igfx", "failed to apply patches for Skylake with KBL kexts");
 	}
 
 	bool ret = FunctionCast(wrapAcceleratorStart, callbackIGFX->orgAcceleratorStart)(that, provider);
